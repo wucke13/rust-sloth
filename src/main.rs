@@ -1,7 +1,8 @@
+use clap::Clap;
 use crossterm::{
     cursor,
-    event::{poll, read, Event, KeyCode, KeyEvent, KeyModifiers},
-    ExecutableCommand,
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    execute, terminal,
 };
 use std::error::Error;
 use std::f32;
@@ -20,35 +21,42 @@ pub mod rasterizer;
 pub use rasterizer::*;
 
 pub mod inputs;
-pub use inputs::*;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let matches = cli_matches(); // Read command line arguments
+    let opts = inputs::Opts::parse(); // Read command line arguments
 
     let fps_cap = 500.0;
     let target_frame_time = Duration::from_secs_f64(1.0 / fps_cap);
 
-    let mesh_queue: Vec<SimpleMesh> = match_meshes(&matches)?; // A list of meshes to render
-    let mut turntable = match_turntable(&matches)?;
+    let mesh_queue: Vec<SimpleMesh> = opts.match_meshes()?; // A list of meshes to render
+    let mut turntable = opts.match_turntable()?;
     let mut stdout = stdout();
-    let no_color = match_no_color_mode(&matches);
+    let no_color = opts.color_less;
     let mut webify = false;
     let mut webify_frame_count = 0;
     let mut webify_todo_frames = 0;
 
-    let mut context: Context = Context::blank(match_image_mode(&matches)); // The context holds the frame+z buffer, and the width and height
+    let image_mode = match opts.subcmd {
+        inputs::SubCommand::Image { .. } => true,
+        _ => false,
+    };
+
+    // The context holds the frame+z buffer, and the width and height
+    let mut context: Context = Context::blank(image_mode);
+
     if context.image {
-        if let Some(matches) = matches.subcommand_matches("image") {
-            match_dimensions(&mut context, &matches)?;
-            turntable = match_turntable(matches)?;
+        /*
+        if let Some(matches) = image_mode {
+            opts.match_dimensions(&mut context)?;
+            turntable = opts.match_turntable()?;
             if let Some(animation_frames) = matches.value_of("frame count") {
                 webify_todo_frames = animation_frames.parse()?;
                 webify = true;
             }
-        }
+        }*/
     } else {
         crossterm::terminal::enable_raw_mode()?;
-        stdout.execute(cursor::Hide)?;
+        execute!(stdout, cursor::Hide, terminal::EnterAlternateScreen)?;
     }
     let size: (u16, u16) = (0, 0); // This is the terminal size, it's used to check when a new context must be made
 
@@ -60,12 +68,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     loop {
         last_time = Instant::now();
         if !context.image {
-            if poll(target_frame_time - last_time.elapsed())? {
-                if let Event::Key(KeyEvent { code, modifiers }) = read()? {
+            if event::poll(target_frame_time - last_time.elapsed())? {
+                if let Event::Key(KeyEvent { code, modifiers }) = event::read()? {
                     if code == KeyCode::Char('q')
                         || (code == KeyCode::Char('c') && (modifiers == KeyModifiers::CONTROL))
                     {
-                        stdout.execute(cursor::Show)?;
+                        execute!(stdout, cursor::Show, terminal::LeaveAlternateScreen)?;
                         crossterm::terminal::disable_raw_mode()?;
                         break;
                     }
@@ -87,7 +95,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
 
         context.flush(!no_color, webify)?; // This prints all framebuffer info
-        stdout.flush()?;
+
         let dt = Instant::now().duration_since(last_time).as_nanos() as f32 / 1_000_000_000.0;
         turntable.1 += if webify {
             turntable.3
